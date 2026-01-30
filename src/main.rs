@@ -111,6 +111,11 @@ fn main() {
         (0..sequence_bytes).map(|_| rng.gen::<u8>()).collect()
     };
     
+    // Verify the sequence length matches the expected size
+    assert_eq!(random_sequence.len(), sequence_bytes, 
+        "Random sequence length mismatch: expected {} bytes, got {}", 
+        sequence_bytes, random_sequence.len());
+    
     println!("Generated random {}-bit sequence:", sequence_bits);
     println!("{}", hex_encode(&random_sequence));
     println!();
