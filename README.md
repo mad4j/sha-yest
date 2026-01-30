@@ -4,14 +4,14 @@ Testing SHA related stuff
 
 ## SHA-YEST: SHA256 Zero-Bit Search
 
-This Rust program searches for SHA256 hashes that, when XORed with a random 512-bit sequence, produce the maximum number of zero bits.
+This Rust program searches for SHA256 hashes that, when XORed with a random 256-bit sequence, produce the maximum number of zero bits.
 
 ### Algorithm
 
-1. Generates a random 512-bit (64 bytes) sequence
+1. Generates a random 256-bit (32 bytes) sequence
 2. For each index from 0 to 65535 (2^16 iterations):
    - Calculates SHA256 of the index
-   - Performs XOR between the SHA256 hash and the first 32 bytes of the random sequence
+   - Performs XOR between the SHA256 hash and the random sequence
    - Counts the number of zero bits in the XOR result
 3. Stops early if:
    - All 256 bits are zero (perfect match)
@@ -38,7 +38,7 @@ cargo run --release -- 180
 ### Output
 
 The program displays:
-- The generated random 512-bit sequence
+- The generated random 256-bit sequence
 - Progress updates showing new best results
 - The final result with:
   - Index value that produced the best result
@@ -51,8 +51,8 @@ The program displays:
 SHA-YEST: Searching for SHA256 hashes with maximum zero bits after XOR
 Threshold: 200 zeros out of 256 bits
 
-Generated random 512-bit sequence:
-ca836c7c0a9c2c5fb8f1b96b249ff36b659abf8df0a510bd5338a15aad6cd559...
+Generated random 256-bit sequence:
+ca836c7c0a9c2c5fb8f1b96b249ff36b659abf8df0a510bd5338a15aad6cd559
 
 New best at index 0: 143 zeros
   Hash: df3f619804a92fdb4057192dc43dd748ea778adc52bc498ce80524c014b81119

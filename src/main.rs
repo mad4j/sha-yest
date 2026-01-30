@@ -35,11 +35,11 @@ fn main() {
     println!("Threshold: {} zeros out of 256 bits", threshold);
     println!();
 
-    // Generate random 512-bit (64 bytes) sequence
+    // Generate random 256-bit (32 bytes) sequence
     let mut rng = rand::thread_rng();
-    let random_sequence: Vec<u8> = (0..64).map(|_| rng.gen::<u8>()).collect();
+    let random_sequence: Vec<u8> = (0..32).map(|_| rng.gen::<u8>()).collect();
     
-    println!("Generated random 512-bit sequence:");
+    println!("Generated random 256-bit sequence:");
     println!("{}", hex_encode(&random_sequence));
     println!();
 
@@ -54,8 +54,8 @@ fn main() {
         hasher.update(i.to_le_bytes());
         let hash = hasher.finalize();
         
-        // XOR with random sequence (use first 32 bytes of random sequence to match SHA256 output)
-        let xor_result = xor_arrays(&hash, &random_sequence[..32]);
+        // XOR with random sequence (256-bit sequence matches SHA256 output)
+        let xor_result = xor_arrays(&hash, &random_sequence);
         
         // Count zeros in the XOR result
         let zeros = count_zeros(&xor_result);
