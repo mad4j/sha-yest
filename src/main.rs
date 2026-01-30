@@ -8,11 +8,11 @@ use clap::Parser;
 #[command(about = "Searches for SHA hashes with maximum zero bits after XOR", long_about = None)]
 struct Args {
     /// Number of bits in the initial sequence (256 or 512, determines SHA algorithm)
-    #[arg(short = 's', long, default_value_t = 256)]
+    #[arg(short = 's', long, default_value_t = 256, value_parser = clap::value_parser!(u16).range(1..))]
     sequence_bits: u16,
 
     /// Number of bits for the search index (determines iteration count: 2^index_bits)
-    #[arg(short = 'i', long, default_value_t = 16)]
+    #[arg(short = 'i', long, default_value_t = 16, value_parser = clap::value_parser!(u8).range(1..=32))]
     index_bits: u8,
 
     /// Threshold value for zeros (early stop if reached)
@@ -34,52 +34,44 @@ fn main() {
     let args = Args::parse();
 
     // Validate sequence_bits (must be 256 or 512)
-    let sequence_bits = match args.sequence_bits {
-        256 | 512 => args.sequence_bits,
-        _ => {
-            eprintln!("Error: sequence_bits must be 256 or 512. Got: {}", args.sequence_bits);
-            std::process::exit(1);
-        }
-    };
-
-    // Validate index_bits (must be between 1 and 32)
-    let index_bits = if args.index_bits > 32 || args.index_bits == 0 {
-        eprintln!("Error: index_bits must be between 1 and 32. Got: {}", args.index_bits);
+    if args.sequence_bits != 256 && args.sequence_bits != 512 {
+        eprintln!("Error: sequence_bits must be 256 or 512. Got: {}", args.sequence_bits);
         std::process::exit(1);
-    } else {
-        args.index_bits
-    };
+    }
 
-    // Validate threshold
-    let threshold = if args.threshold > sequence_bits as usize {
+    // index_bits is already validated by clap (1-32 range)
+    let index_bits = args.index_bits;
+
+    // Validate and adjust threshold if needed
+    let threshold = if args.threshold > args.sequence_bits as usize {
         eprintln!("Warning: Threshold {} exceeds maximum {} bits. Using {}.", 
-                  args.threshold, sequence_bits, sequence_bits);
-        sequence_bits as usize
+                  args.threshold, args.sequence_bits, args.sequence_bits);
+        args.sequence_bits as usize
     } else {
         args.threshold
     };
 
-    let sha_algorithm = if sequence_bits == 256 { "SHA256" } else { "SHA512" };
+    let sha_algorithm = if args.sequence_bits == 256 { "SHA256" } else { "SHA512" };
     let max_iterations = 1u64 << index_bits;
     
     println!("SHA-YEST: Searching for {} hashes with maximum zero bits after XOR", sha_algorithm);
     println!("Configuration:");
-    println!("  Sequence bits: {} (using {})", sequence_bits, sha_algorithm);
+    println!("  Sequence bits: {} (using {})", args.sequence_bits, sha_algorithm);
     println!("  Index bits: {} (2^{} = {} iterations)", index_bits, index_bits, max_iterations);
-    println!("  Threshold: {} zeros out of {} bits", threshold, sequence_bits);
+    println!("  Threshold: {} zeros out of {} bits", threshold, args.sequence_bits);
     println!();
 
     // Generate random sequence based on sequence_bits
     let mut rng = rand::thread_rng();
-    let sequence_bytes = (sequence_bits / 8) as usize;
+    let sequence_bytes = (args.sequence_bits / 8) as usize;
     let random_sequence: Vec<u8> = (0..sequence_bytes).map(|_| rng.gen::<u8>()).collect();
     
-    println!("Generated random {}-bit sequence:", sequence_bits);
+    println!("Generated random {}-bit sequence:", args.sequence_bits);
     println!("{}", hex_encode(&random_sequence));
     println!();
 
     // Call appropriate search function based on sequence_bits
-    if sequence_bits == 256 {
+    if args.sequence_bits == 256 {
         search_sha256(&random_sequence, max_iterations, threshold);
     } else {
         search_sha512(&random_sequence, max_iterations, threshold);
@@ -130,10 +122,10 @@ fn search_sha256(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
             return;
         }
         
-        // Stop if threshold exceeded
+        // Stop if threshold met or exceeded
         if zeros >= threshold {
             println!();
-            println!("Threshold exceeded! Found {} zeros (threshold: {})", zeros, threshold);
+            println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
             println!("Index: {}", i);
             println!("Hash: {}", hex_encode(&hash));
             return;
@@ -193,10 +185,10 @@ fn search_sha512(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
             return;
         }
         
-        // Stop if threshold exceeded
+        // Stop if threshold met or exceeded
         if zeros >= threshold {
             println!();
-            println!("Threshold exceeded! Found {} zeros (threshold: {})", zeros, threshold);
+            println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
             println!("Index: {}", i);
             println!("Hash: {}", hex_encode(&hash));
             return;
