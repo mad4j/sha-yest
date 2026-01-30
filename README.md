@@ -8,7 +8,8 @@ This Rust program searches for SHA hashes that, when XORed with a random sequenc
 
 ### Algorithm
 
-1. Generates a random sequence (256 bits for SHA256, 512 bits for SHA512)
+1. Generates a random sequence (128, 256, or 512 bits based on configuration)
+   - If a seed is provided, the random sequence is reproducible
 2. For each index from 0 to 2^index_bits iterations:
    - Calculates SHA hash of the index
    - Performs XOR between the SHA hash and the random sequence
@@ -38,8 +39,11 @@ cargo run --release -- --sequence-bits 512 --index-bits 12 --threshold 300
 # Use SHA256 with 2^8 iterations and threshold of 150
 cargo run --release -- --sequence-bits 256 --index-bits 8 --threshold 150
 
+# Use 128-bit sequence with a seed for reproducibility
+cargo run --release -- --sequence-bits 128 --index-bits 10 --seed 42
+
 # Short form
-cargo run --release -- -s 512 -i 12 -t 300
+cargo run --release -- -s 512 -i 12 -t 300 --seed 12345
 ```
 
 View help:
@@ -49,9 +53,13 @@ cargo run --release -- --help
 
 ### Command-Line Options
 
-- `-s, --sequence-bits <BITS>` - Number of bits in the initial sequence (256 or 512, determines SHA algorithm) [default: 256]
+- `-s, --sequence-bits <BITS>` - Number of bits in the initial sequence (128, 256, or 512) [default: 256]
+  - 128: Uses SHA256 with first 128 bits
+  - 256: Uses SHA256
+  - 512: Uses SHA512
 - `-i, --index-bits <BITS>` - Number of bits for the search index (determines iteration count: 2^index_bits, must be 1-32) [default: 16]
 - `-t, --threshold <VALUE>` - Threshold value for zeros (early stop if reached) [default: 200]
+- `--seed <VALUE>` - Seed for PRNG initialization (optional, for reproducible random sequences)
 
 ### Output
 
