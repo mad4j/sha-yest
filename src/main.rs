@@ -23,12 +23,6 @@ impl SequenceBits {
             SequenceBits::Bits512 => 512,
         }
     }
-
-    /// Determines which SHA algorithm to use based on sequence bits
-    /// Rule: Use SHA256 for sequences <= 256 bits, SHA512 for larger sequences
-    fn uses_sha512(&self) -> bool {
-        self.as_u16() > 256
-    }
 }
 
 impl Default for SequenceBits {
@@ -86,9 +80,9 @@ fn main() {
         args.threshold
     };
 
-    // Determine SHA algorithm based on sequence bits
+    // Determine SHA algorithm display string based on sequence bits value
     // Rule: Use SHA256 for <= 256 bits, SHA512 for > 256 bits
-    let sha_algorithm = if args.sequence_bits.uses_sha512() {
+    let sha_algorithm = if sequence_bits > 256 {
         "SHA512"
     } else if sequence_bits == 256 {
         "SHA256"
