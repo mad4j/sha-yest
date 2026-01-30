@@ -23,6 +23,12 @@ impl SequenceBits {
             SequenceBits::Bits512 => 512,
         }
     }
+
+    /// Determines which SHA algorithm to use based on sequence bits
+    /// Rule: Use SHA256 for sequences <= 256 bits, SHA512 for larger sequences
+    fn uses_sha512(&self) -> bool {
+        self.as_u16() > 256
+    }
 }
 
 impl Default for SequenceBits {
@@ -80,10 +86,14 @@ fn main() {
         args.threshold
     };
 
-    let sha_algorithm = match args.sequence_bits {
-        SequenceBits::Bits128 => "SHA256 (128 bits)",
-        SequenceBits::Bits256 => "SHA256",
-        SequenceBits::Bits512 => "SHA512",
+    // Determine SHA algorithm based on sequence bits
+    // Rule: Use SHA256 for <= 256 bits, SHA512 for > 256 bits
+    let sha_algorithm = if args.sequence_bits.uses_sha512() {
+        "SHA512"
+    } else if sequence_bits == 256 {
+        "SHA256"
+    } else {
+        "SHA256 (128 bits)"
     };
     let max_iterations = 1u64 << index_bits;
     
@@ -111,11 +121,18 @@ fn main() {
     println!("{}", hex_encode(&random_sequence));
     println!();
 
-    // Call appropriate search function based on sequence_bits
-    match args.sequence_bits {
-        SequenceBits::Bits128 => search_sha256_128(&random_sequence, max_iterations, threshold),
-        SequenceBits::Bits256 => search_sha256(&random_sequence, max_iterations, threshold),
-        SequenceBits::Bits512 => search_sha512(&random_sequence, max_iterations, threshold),
+    // Call appropriate search function based on sequence_bits value
+    // Consistent rule: The number of bits directly indicates the SHA type used:
+    // - sequence_bits <= 256: use SHA256 (truncated if needed)
+    // - sequence_bits > 256: use SHA512
+    if sequence_bits <= 256 {
+        if sequence_bits < 256 {
+            search_sha256_128(&random_sequence, max_iterations, threshold)
+        } else {
+            search_sha256(&random_sequence, max_iterations, threshold)
+        }
+    } else {
+        search_sha512(&random_sequence, max_iterations, threshold)
     }
 }
 
