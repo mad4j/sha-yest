@@ -80,14 +80,12 @@ fn main() {
         args.threshold
     };
 
-    // Determine SHA algorithm display string based on sequence bits value
-    // Rule: Use SHA256 for <= 256 bits, SHA512 for > 256 bits
-    let sha_algorithm = if sequence_bits > 256 {
-        "SHA512"
-    } else if sequence_bits == 256 {
-        "SHA256"
-    } else {
-        "SHA256 (128 bits)"
+    // Determine SHA algorithm display string
+    // Rule: sequence_bits <= 256 use SHA256, sequence_bits > 256 use SHA512
+    let sha_algorithm = match args.sequence_bits {
+        SequenceBits::Bits128 => "SHA256 (128 bits)", // 128 <= 256: use SHA256
+        SequenceBits::Bits256 => "SHA256",              // 256 <= 256: use SHA256
+        SequenceBits::Bits512 => "SHA512",              // 512 > 256: use SHA512
     };
     let max_iterations = 1u64 << index_bits;
     
@@ -111,27 +109,18 @@ fn main() {
         (0..sequence_bytes).map(|_| rng.gen::<u8>()).collect()
     };
     
-    // Verify the sequence length matches the expected size
-    assert_eq!(random_sequence.len(), sequence_bytes, 
-        "Random sequence length mismatch: expected {} bytes, got {}", 
-        sequence_bytes, random_sequence.len());
-    
     println!("Generated random {}-bit sequence:", sequence_bits);
     println!("{}", hex_encode(&random_sequence));
     println!();
 
-    // Call appropriate search function based on sequence_bits value
-    // Consistent rule: The number of bits directly indicates the SHA type used:
-    // - sequence_bits <= 256: use SHA256 (truncated if needed)
-    // - sequence_bits > 256: use SHA512
-    if sequence_bits <= 256 {
-        if sequence_bits < 256 {
-            search_sha256_128(&random_sequence, max_iterations, threshold)
-        } else {
-            search_sha256(&random_sequence, max_iterations, threshold)
-        }
-    } else {
-        search_sha512(&random_sequence, max_iterations, threshold)
+    // Call appropriate search function based on sequence_bits
+    // Consistent rule: The number of bits indicates the SHA type:
+    //   sequence_bits <= 256: use SHA256 (truncated if needed)
+    //   sequence_bits > 256: use SHA512
+    match args.sequence_bits {
+        SequenceBits::Bits128 => search_sha256_128(&random_sequence, max_iterations, threshold), // 128 <= 256: SHA256
+        SequenceBits::Bits256 => search_sha256(&random_sequence, max_iterations, threshold),     // 256 <= 256: SHA256
+        SequenceBits::Bits512 => search_sha512(&random_sequence, max_iterations, threshold),     // 512 > 256: SHA512
     }
 }
 
