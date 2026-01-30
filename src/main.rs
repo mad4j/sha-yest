@@ -16,13 +16,23 @@ fn main() {
     // Parse threshold from command line argument or use default
     let args: Vec<String> = env::args().collect();
     let threshold: usize = if args.len() > 1 {
-        args[1].parse().unwrap_or(450)
+        match args[1].parse::<usize>() {
+            Ok(val) if val <= 256 => val,
+            Ok(val) => {
+                eprintln!("Warning: Threshold {} exceeds maximum 256 bits. Using 256.", val);
+                256
+            }
+            Err(_) => {
+                eprintln!("Warning: Invalid threshold '{}'. Using default 200.", args[1]);
+                200
+            }
+        }
     } else {
-        450 // Default threshold (out of 512 bits)
+        200 // Default threshold (out of 256 bits from SHA256)
     };
 
-    println!("SHA-YEST: Searching for SHA256 collisions with configurable threshold");
-    println!("Threshold: {} zeros out of 512 bits", threshold);
+    println!("SHA-YEST: Searching for SHA256 hashes with maximum zero bits after XOR");
+    println!("Threshold: {} zeros out of 256 bits", threshold);
     println!();
 
     // Generate random 512-bit (64 bytes) sequence
@@ -37,8 +47,8 @@ fn main() {
     let mut best_zeros: usize = 0;
     let mut best_hash: Vec<u8> = vec![];
 
-    // Search through indices from 0 to 2^16 (65536)
-    for i in 0..=65536u32 {
+    // Search through indices from 0 to 2^16-1 (0 to 65535, total 65536 iterations)
+    for i in 0..65536u32 {
         // Calculate SHA256 of the index
         let mut hasher = Sha256::new();
         hasher.update(i.to_le_bytes());
