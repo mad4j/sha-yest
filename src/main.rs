@@ -67,7 +67,7 @@ fn main() {
     let args = Args::parse();
 
     let sequence_bits = args.sequence_bits.as_u16();
-    
+
     // index_bits is already validated by clap (1-32 range)
     let index_bits = args.index_bits;
 
