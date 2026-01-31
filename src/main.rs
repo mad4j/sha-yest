@@ -4,7 +4,27 @@ use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256, Sha512};
 use clap::{Parser, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
+use rayon::prelude::*;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StopReason {
+    Exhausted,
+    ThresholdReached,
+    PerfectMatch,
+}
+
+#[derive(Debug, Clone)]
+struct SearchResult {
+    total_bits: u16,
+    threshold: usize,
+    stop_reason: StopReason,
+    best_index: u64,
+    best_zeros: usize,
+    best_hash: Vec<u8>,
+}
 
 /// Sequence length in bits
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -43,7 +63,7 @@ struct Args {
     sequence_bits: SequenceBits,
 
     /// Number of bits for the search index (determines iteration count: 2^index_bits)
-    #[arg(short = 'i', long, default_value_t = 16, value_parser = clap::value_parser!(u8).range(1..=32))]
+    #[arg(short = 'i', long, default_value_t = 16, value_parser = clap::value_parser!(u8).range(1..=64))]
     index_bits: u8,
 
     /// Threshold value for zeros (early stop if reached)
@@ -70,7 +90,7 @@ fn main() {
 
     let sequence_bits = args.sequence_bits.as_u16();
 
-    // index_bits is already validated by clap (1-32 range)
+    // index_bits is validated by clap (1-64 range)
     let index_bits = args.index_bits;
 
     // Validate and adjust threshold if needed
@@ -89,12 +109,30 @@ fn main() {
         SequenceBits::Bits256 => "SHA256",              // 256 <= 256: use SHA256
         SequenceBits::Bits512 => "SHA512",              // 512 > 256: use SHA512
     };
-    let max_iterations = 1u64 << index_bits;
+
+    // Compute 2^index_bits safely. We iterate using u64 indices, so we must be able to
+    // represent the iteration count as u64.
+    let requested_iterations: u128 = 1u128 << index_bits;
+    if requested_iterations > u64::MAX as u128 {
+        eprintln!(
+            "Error: index-bits={} would require 2^{} iterations ({}), which exceeds u64::MAX ({}).\n\
+Choose an index-bits value <= 63.",
+            index_bits,
+            index_bits,
+            requested_iterations,
+            u64::MAX
+        );
+        std::process::exit(2);
+    }
+    let max_iterations = requested_iterations as u64;
     
     println!("SHA-YEST: Searching for {} hashes with maximum zero bits after XOR", sha_algorithm);
     println!("Configuration:");
     println!("  Sequence bits: {} (using {})", sequence_bits, sha_algorithm);
-    println!("  Index bits: {} (2^{} = {} iterations)", index_bits, index_bits, max_iterations);
+    println!(
+        "  Index bits: {} (2^{} = {} iterations)",
+        index_bits, index_bits, requested_iterations
+    );
     println!("  Threshold: {} zeros out of {} bits", threshold, sequence_bits);
     if let Some(seed_value) = args.seed {
         println!("  Seed: {}", seed_value);
@@ -120,17 +158,31 @@ fn main() {
     );
     println!();
 
-    // Call appropriate search function based on sequence_bits
-    // Consistent rule: The number of bits indicates the SHA type:
-    //   sequence_bits <= 256: use SHA256 (truncated if needed)
-    //   sequence_bits > 256: use SHA512
-    match args.sequence_bits {
-        SequenceBits::Bits128 => search_sha256_128(&random_sequence, max_iterations, threshold), // 128 <= 256: SHA256
-        SequenceBits::Bits256 => search_sha256(&random_sequence, max_iterations, threshold),     // 256 <= 256: SHA256
-        SequenceBits::Bits512 => search_sha512(&random_sequence, max_iterations, threshold),     // 512 > 256: SHA512
-    }
+    // Create a progress bar in main so reporting stays centralized.
+    let pb_label = match args.sequence_bits {
+        SequenceBits::Bits128 => "SHA256/128",
+        SequenceBits::Bits256 => "SHA256",
+        SequenceBits::Bits512 => "SHA512",
+    };
+    let pb = create_progress_bar(max_iterations, pb_label);
 
-    
+    // Call appropriate search function based on sequence_bits.
+    // Consistent rule: sequence_bits <= 256 => SHA256 (truncated if needed), sequence_bits > 256 => SHA512.
+    let result = match args.sequence_bits {
+        SequenceBits::Bits128 => search_sha256_128(&random_sequence, max_iterations, threshold, &pb),
+        SequenceBits::Bits256 => search_sha256(&random_sequence, max_iterations, threshold, &pb),
+        SequenceBits::Bits512 => search_sha512(&random_sequence, max_iterations, threshold, &pb),
+    };
+
+    let finish_msg = match result.stop_reason {
+        StopReason::PerfectMatch => "perfect match".to_string(),
+        StopReason::ThresholdReached => format!("threshold reached (best={})", result.best_zeros),
+        StopReason::Exhausted => format!("done (best={})", result.best_zeros),
+    };
+    pb.finish_with_message(finish_msg);
+
+    println!();
+    print_final_report(&result, &random_sequence);
 }
 
 /// Helper function to encode bytes as hex string
@@ -152,199 +204,296 @@ fn create_progress_bar(max_iterations: u64, label: &str) -> ProgressBar {
     pb
 }
 
-/// Search using SHA256 (128 bits)
-fn search_sha256_128(random_sequence: &[u8], max_iterations: u64, threshold: usize) {
-    let mut best_index: u64 = 0;
-    let mut best_zeros: usize = 0;
-    let mut best_hash: Vec<u8> = vec![];
-    let total_bits = 128;
+fn print_final_report(result: &SearchResult, random_sequence: &[u8]) {
+    match result.stop_reason {
+        StopReason::PerfectMatch => {
+            println!("Perfect match found! All {} bits are zero.", result.total_bits);
+        }
+        StopReason::ThresholdReached => {
+            println!(
+                "Threshold reached! Best zeros: {} (threshold: {})",
+                result.best_zeros, result.threshold
+            );
+        }
+        StopReason::Exhausted => {
+            println!("Search complete!");
+        }
+    }
 
-    let pb = create_progress_bar(max_iterations, "SHA256/128");
+    println!("Best result:");
+    println!("  Index: {}", result.best_index);
+    println!("  Zeros: {} out of {} bits", result.best_zeros, result.total_bits);
+    println!("  Hash: {}", hex_encode(&result.best_hash));
+
+    let base_zeros = count_zeros(random_sequence);
+    let enhancement = result.best_zeros as isize - base_zeros as isize;
+    println!(
+        "  Enhancement vs original sequence: {:+} zero bits (original: {} / {})",
+        enhancement, base_zeros, result.total_bits
+    );
+}
+
+/// Search using SHA256 (128 bits)
+fn search_sha256_128(
+    random_sequence: &[u8],
+    max_iterations: u64,
+    threshold: usize,
+    pb: &ProgressBar,
+) -> SearchResult {
+    let total_bits: u16 = 128;
     pb.set_message("best=0".to_string());
 
-    for i in 0..max_iterations {
-        pb.inc(1);
+    let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
+    let best_zeros = AtomicUsize::new(0);
+    let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
+
+    let _ = (0..max_iterations).into_par_iter().try_for_each(|i| -> Result<(), ()> {
+        if stop_reason.load(Ordering::Relaxed) != 0 {
+            return Err(());
+        }
+
         // Calculate SHA256 of the index, then use only first 128 bits (16 bytes)
         let mut hasher = Sha256::new();
         hasher.update(i.to_le_bytes());
         let full_hash = hasher.finalize();
         let hash = &full_hash[..16];
-        
+
         // XOR with random sequence
         let xor_result = xor_arrays(hash, random_sequence);
-        
+
         // Count zeros in the XOR result
         let zeros = count_zeros(&xor_result);
-        
-        // Update best result
-        if zeros > best_zeros {
-            best_zeros = zeros;
-            best_index = i;
-            best_hash = hash.to_vec();
-            
-            pb.set_message(format!("best={}", best_zeros));
-        }
-        
-        // Stop if all zeros
-        if zeros == total_bits {
-            pb.finish_with_message("perfect match".to_string());
-            println!();
-            println!("Perfect match found! All {} bits are zero.", total_bits);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(hash));
-            return;
-        }
-        
-        // Stop if threshold met or exceeded
-        if zeros >= threshold {
-            pb.finish_with_message("threshold reached".to_string());
-            println!();
-            println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(hash));
-            return;
-        }
-    }
 
-    // Print final result
-    pb.finish_with_message(format!("done (best={})", best_zeros));
-    println!();
-    println!("Search complete!");
-    println!("Best result:");
-    println!("  Index: {}", best_index);
-    println!("  Zeros: {} out of {} bits", best_zeros, total_bits);
-    println!("  Hash: {}", hex_encode(&best_hash));
+        pb.inc(1);
+
+        // Update best result (atomic gate + mutex for hash storage)
+        let mut current_best = best_zeros.load(Ordering::Relaxed);
+        while zeros > current_best {
+            match best_zeros.compare_exchange_weak(
+                current_best,
+                zeros,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if let Ok(mut guard) = best.lock() {
+                        *guard = (i, zeros, hash.to_vec());
+                    }
+                    pb.set_message(format!("best={}", zeros));
+                    break;
+                }
+                Err(updated) => current_best = updated,
+            }
+        }
+
+        // Stop if all zeros
+        if zeros as u16 == total_bits {
+            stop_reason.store(2, Ordering::Relaxed);
+            return Err(());
+        }
+
+        // Stop if the best reached or exceeded threshold (more robust than stopping on any single hit)
+        if best_zeros.load(Ordering::Relaxed) >= threshold {
+            stop_reason.store(1, Ordering::Relaxed);
+            return Err(());
+        }
+
+        Ok(())
+    });
+
+    let (best_index, best_zeros_val, best_hash) = match best.into_inner() {
+        Ok(v) => v,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let reason = match stop_reason.load(Ordering::Relaxed) {
+        2 => StopReason::PerfectMatch,
+        1 => StopReason::ThresholdReached,
+        _ => StopReason::Exhausted,
+    };
+
+    SearchResult {
+        total_bits,
+        threshold,
+        stop_reason: reason,
+        best_index,
+        best_zeros: best_zeros_val,
+        best_hash,
+    }
 }
 
 /// Search using SHA256
-fn search_sha256(random_sequence: &[u8], max_iterations: u64, threshold: usize) {
-    let mut best_index: u64 = 0;
-    let mut best_zeros: usize = 0;
-    let mut best_hash: Vec<u8> = vec![];
-    let total_bits = 256;
-
-    let pb = create_progress_bar(max_iterations, "SHA256");
+fn search_sha256(
+    random_sequence: &[u8],
+    max_iterations: u64,
+    threshold: usize,
+    pb: &ProgressBar,
+) -> SearchResult {
+    let total_bits: u16 = 256;
     pb.set_message("best=0".to_string());
 
-    for i in 0..max_iterations {
-        pb.inc(1);
+    let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
+    let best_zeros = AtomicUsize::new(0);
+    let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
+
+    let _ = (0..max_iterations).into_par_iter().try_for_each(|i| -> Result<(), ()> {
+        if stop_reason.load(Ordering::Relaxed) != 0 {
+            return Err(());
+        }
+
         // Calculate SHA256 of the index
         let mut hasher = Sha256::new();
         hasher.update(i.to_le_bytes());
         let hash = hasher.finalize();
-        
+
         // XOR with random sequence
         let xor_result = xor_arrays(&hash, random_sequence);
-        
+
         // Count zeros in the XOR result
         let zeros = count_zeros(&xor_result);
-        
-        // Update best result
-        if zeros > best_zeros {
-            best_zeros = zeros;
-            best_index = i;
-            best_hash = hash.to_vec();
-            
-            pb.set_message(format!("best={}", best_zeros));
-        }
-        
-        // Stop if all zeros
-        if zeros == total_bits {
-            pb.finish_with_message("perfect match".to_string());
-            println!();
-            println!("Perfect match found! All {} bits are zero.", total_bits);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(&hash));
-            return;
-        }
-        
-        // Stop if threshold met or exceeded
-        if zeros >= threshold {
-            pb.finish_with_message("threshold reached".to_string());
-            println!();
-            println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(&hash));
-            return;
-        }
-    }
 
-    // Print final result
-    pb.finish_with_message(format!("done (best={})", best_zeros));
-    println!();
-    println!("Search complete!");
-    println!("Best result:");
-    println!("  Index: {}", best_index);
-    println!("  Zeros: {} out of {} bits", best_zeros, total_bits);
-    println!("  Hash: {}", hex_encode(&best_hash));
+        pb.inc(1);
+
+        // Update best result (atomic gate + mutex for hash storage)
+        let mut current_best = best_zeros.load(Ordering::Relaxed);
+        while zeros > current_best {
+            match best_zeros.compare_exchange_weak(
+                current_best,
+                zeros,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if let Ok(mut guard) = best.lock() {
+                        *guard = (i, zeros, hash.to_vec());
+                    }
+                    pb.set_message(format!("best={}", zeros));
+                    break;
+                }
+                Err(updated) => current_best = updated,
+            }
+        }
+
+        // Stop if all zeros
+        if zeros as u16 == total_bits {
+            stop_reason.store(2, Ordering::Relaxed);
+            return Err(());
+        }
+
+        // Stop if the best reached or exceeded threshold
+        if best_zeros.load(Ordering::Relaxed) >= threshold {
+            stop_reason.store(1, Ordering::Relaxed);
+            return Err(());
+        }
+
+        Ok(())
+    });
+
+    let (best_index, best_zeros_val, best_hash) = match best.into_inner() {
+        Ok(v) => v,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let reason = match stop_reason.load(Ordering::Relaxed) {
+        2 => StopReason::PerfectMatch,
+        1 => StopReason::ThresholdReached,
+        _ => StopReason::Exhausted,
+    };
+
+    SearchResult {
+        total_bits,
+        threshold,
+        stop_reason: reason,
+        best_index,
+        best_zeros: best_zeros_val,
+        best_hash,
+    }
 }
 
 /// Search using SHA512
-fn search_sha512(random_sequence: &[u8], max_iterations: u64, threshold: usize) {
-    let mut best_index: u64 = 0;
-    let mut best_zeros: usize = 0;
-    let mut best_hash: Vec<u8> = vec![];
-    let total_bits = 512;
-
-    let pb = create_progress_bar(max_iterations, "SHA512");
+fn search_sha512(
+    random_sequence: &[u8],
+    max_iterations: u64,
+    threshold: usize,
+    pb: &ProgressBar,
+) -> SearchResult {
+    let total_bits: u16 = 512;
     pb.set_message("best=0".to_string());
 
-    for i in 0..max_iterations {
-        pb.inc(1);
+    let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
+    let best_zeros = AtomicUsize::new(0);
+    let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
+
+    let _ = (0..max_iterations).into_par_iter().try_for_each(|i| -> Result<(), ()> {
+        if stop_reason.load(Ordering::Relaxed) != 0 {
+            return Err(());
+        }
+
         // Calculate SHA512 of the index
         let mut hasher = Sha512::new();
         hasher.update(i.to_le_bytes());
         let hash = hasher.finalize();
-        
+
         // XOR with random sequence
         let xor_result = xor_arrays(&hash, random_sequence);
-        
+
         // Count zeros in the XOR result
         let zeros = count_zeros(&xor_result);
-        
-        // Update best result
-        if zeros > best_zeros {
-            best_zeros = zeros;
-            best_index = i;
-            best_hash = hash.to_vec();
-            
-            pb.set_message(format!("best={}", best_zeros));
-        }
-        
-        // Stop if all zeros
-        if zeros == total_bits {
-            pb.finish_with_message("perfect match".to_string());
-            println!();
-            println!("Perfect match found! All {} bits are zero.", total_bits);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(&hash));
-            return;
-        }
-        
-        // Stop if threshold met or exceeded
-        if zeros >= threshold {
-            pb.finish_with_message("threshold reached".to_string());
-            println!();
-            println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
-            println!("Index: {}", i);
-            println!("Hash: {}", hex_encode(&hash));
-            return;
-        }
-    }
 
-    // Print final result
-    pb.finish_with_message(format!("done (best={})", best_zeros));
-    println!();
-    println!("Search complete!");
-    println!("Best result:");
-    println!("  Index: {}", best_index);
-    println!("  Zeros: {} out of {} bits", best_zeros, total_bits);
-    println!("  Hash: {}", hex_encode(&best_hash));
-    // Show how much the best result improved zero-bits compared to the original random sequence
-    let base_zeros = count_zeros(random_sequence);
-    let enhancement = best_zeros as isize - base_zeros as isize;
-    println!(
-        "  Enhancement vs original sequence: {:+} zero bits (original: {} / {})",
-        enhancement, base_zeros, total_bits
-    );
+        pb.inc(1);
+
+        // Update best result (atomic gate + mutex for hash storage)
+        let mut current_best = best_zeros.load(Ordering::Relaxed);
+        while zeros > current_best {
+            match best_zeros.compare_exchange_weak(
+                current_best,
+                zeros,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    if let Ok(mut guard) = best.lock() {
+                        *guard = (i, zeros, hash.to_vec());
+                    }
+                    pb.set_message(format!("best={}", zeros));
+                    break;
+                }
+                Err(updated) => current_best = updated,
+            }
+        }
+
+        // Stop if all zeros
+        if zeros as u16 == total_bits {
+            stop_reason.store(2, Ordering::Relaxed);
+            return Err(());
+        }
+
+        // Stop if the best reached or exceeded threshold
+        if best_zeros.load(Ordering::Relaxed) >= threshold {
+            stop_reason.store(1, Ordering::Relaxed);
+            return Err(());
+        }
+
+        Ok(())
+    });
+
+    let (best_index, best_zeros_val, best_hash) = match best.into_inner() {
+        Ok(v) => v,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    let reason = match stop_reason.load(Ordering::Relaxed) {
+        2 => StopReason::PerfectMatch,
+        1 => StopReason::ThresholdReached,
+        _ => StopReason::Exhausted,
+    };
+
+    SearchResult {
+        total_bits,
+        threshold,
+        stop_reason: reason,
+        best_index,
+        best_zeros: best_zeros_val,
+        best_hash,
+    }
 }
