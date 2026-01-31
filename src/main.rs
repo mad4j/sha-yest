@@ -3,6 +3,8 @@ use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256, Sha512};
 use clap::{Parser, ValueEnum};
+use indicatif::{ProgressBar, ProgressStyle};
+use std::time::Duration;
 
 /// Sequence length in bits
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -111,6 +113,11 @@ fn main() {
     
     println!("Generated random {}-bit sequence:", sequence_bits);
     println!("{}", hex_encode(&random_sequence));
+    let sequence_zeros = count_zeros(&random_sequence);
+    println!(
+        "Zero bits in random sequence: {} out of {} bits",
+        sequence_zeros, sequence_bits
+    );
     println!();
 
     // Call appropriate search function based on sequence_bits
@@ -122,11 +129,27 @@ fn main() {
         SequenceBits::Bits256 => search_sha256(&random_sequence, max_iterations, threshold),     // 256 <= 256: SHA256
         SequenceBits::Bits512 => search_sha512(&random_sequence, max_iterations, threshold),     // 512 > 256: SHA512
     }
+
+    
 }
 
 /// Helper function to encode bytes as hex string
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02x}", b)).collect()
+}
+
+fn create_progress_bar(max_iterations: u64, label: &str) -> ProgressBar {
+    let pb = ProgressBar::new(max_iterations);
+    let style = ProgressStyle::with_template(
+        "{spinner:.green} {prefix} [{wide_bar:.cyan/blue}] {pos}/{len} ({per_sec}, eta {eta}) {msg}",
+    )
+    .unwrap()
+    .progress_chars("=>-");
+
+    pb.set_style(style);
+    pb.set_prefix(label.to_string());
+    pb.enable_steady_tick(Duration::from_millis(120));
+    pb
 }
 
 /// Search using SHA256 (128 bits)
@@ -136,7 +159,11 @@ fn search_sha256_128(random_sequence: &[u8], max_iterations: u64, threshold: usi
     let mut best_hash: Vec<u8> = vec![];
     let total_bits = 128;
 
+    let pb = create_progress_bar(max_iterations, "SHA256/128");
+    pb.set_message("best=0".to_string());
+
     for i in 0..max_iterations {
+        pb.inc(1);
         // Calculate SHA256 of the index, then use only first 128 bits (16 bytes)
         let mut hasher = Sha256::new();
         hasher.update(i.to_le_bytes());
@@ -155,13 +182,12 @@ fn search_sha256_128(random_sequence: &[u8], max_iterations: u64, threshold: usi
             best_index = i;
             best_hash = hash.to_vec();
             
-            println!("New best at index {}: {} zeros", i, zeros);
-            println!("  Hash: {}", hex_encode(&best_hash));
-            println!("  XOR:  {}", hex_encode(&xor_result));
+            pb.set_message(format!("best={}", best_zeros));
         }
         
         // Stop if all zeros
         if zeros == total_bits {
+            pb.finish_with_message("perfect match".to_string());
             println!();
             println!("Perfect match found! All {} bits are zero.", total_bits);
             println!("Index: {}", i);
@@ -171,20 +197,17 @@ fn search_sha256_128(random_sequence: &[u8], max_iterations: u64, threshold: usi
         
         // Stop if threshold met or exceeded
         if zeros >= threshold {
+            pb.finish_with_message("threshold reached".to_string());
             println!();
             println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
             println!("Index: {}", i);
             println!("Hash: {}", hex_encode(hash));
             return;
         }
-        
-        // Print progress every 10000 iterations
-        if i % 10000 == 0 && i > 0 {
-            println!("Progress: {} / {} iterations completed...", i, max_iterations);
-        }
     }
 
     // Print final result
+    pb.finish_with_message(format!("done (best={})", best_zeros));
     println!();
     println!("Search complete!");
     println!("Best result:");
@@ -200,7 +223,11 @@ fn search_sha256(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
     let mut best_hash: Vec<u8> = vec![];
     let total_bits = 256;
 
+    let pb = create_progress_bar(max_iterations, "SHA256");
+    pb.set_message("best=0".to_string());
+
     for i in 0..max_iterations {
+        pb.inc(1);
         // Calculate SHA256 of the index
         let mut hasher = Sha256::new();
         hasher.update(i.to_le_bytes());
@@ -218,13 +245,12 @@ fn search_sha256(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
             best_index = i;
             best_hash = hash.to_vec();
             
-            println!("New best at index {}: {} zeros", i, zeros);
-            println!("  Hash: {}", hex_encode(&best_hash));
-            println!("  XOR:  {}", hex_encode(&xor_result));
+            pb.set_message(format!("best={}", best_zeros));
         }
         
         // Stop if all zeros
         if zeros == total_bits {
+            pb.finish_with_message("perfect match".to_string());
             println!();
             println!("Perfect match found! All {} bits are zero.", total_bits);
             println!("Index: {}", i);
@@ -234,20 +260,17 @@ fn search_sha256(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
         
         // Stop if threshold met or exceeded
         if zeros >= threshold {
+            pb.finish_with_message("threshold reached".to_string());
             println!();
             println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
             println!("Index: {}", i);
             println!("Hash: {}", hex_encode(&hash));
             return;
         }
-        
-        // Print progress every 10000 iterations
-        if i % 10000 == 0 && i > 0 {
-            println!("Progress: {} / {} iterations completed...", i, max_iterations);
-        }
     }
 
     // Print final result
+    pb.finish_with_message(format!("done (best={})", best_zeros));
     println!();
     println!("Search complete!");
     println!("Best result:");
@@ -263,7 +286,11 @@ fn search_sha512(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
     let mut best_hash: Vec<u8> = vec![];
     let total_bits = 512;
 
+    let pb = create_progress_bar(max_iterations, "SHA512");
+    pb.set_message("best=0".to_string());
+
     for i in 0..max_iterations {
+        pb.inc(1);
         // Calculate SHA512 of the index
         let mut hasher = Sha512::new();
         hasher.update(i.to_le_bytes());
@@ -281,13 +308,12 @@ fn search_sha512(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
             best_index = i;
             best_hash = hash.to_vec();
             
-            println!("New best at index {}: {} zeros", i, zeros);
-            println!("  Hash: {}", hex_encode(&best_hash));
-            println!("  XOR:  {}", hex_encode(&xor_result));
+            pb.set_message(format!("best={}", best_zeros));
         }
         
         // Stop if all zeros
         if zeros == total_bits {
+            pb.finish_with_message("perfect match".to_string());
             println!();
             println!("Perfect match found! All {} bits are zero.", total_bits);
             println!("Index: {}", i);
@@ -297,24 +323,28 @@ fn search_sha512(random_sequence: &[u8], max_iterations: u64, threshold: usize) 
         
         // Stop if threshold met or exceeded
         if zeros >= threshold {
+            pb.finish_with_message("threshold reached".to_string());
             println!();
             println!("Threshold met or exceeded! Found {} zeros (threshold: {})", zeros, threshold);
             println!("Index: {}", i);
             println!("Hash: {}", hex_encode(&hash));
             return;
         }
-        
-        // Print progress every 10000 iterations
-        if i % 10000 == 0 && i > 0 {
-            println!("Progress: {} / {} iterations completed...", i, max_iterations);
-        }
     }
 
     // Print final result
+    pb.finish_with_message(format!("done (best={})", best_zeros));
     println!();
     println!("Search complete!");
     println!("Best result:");
     println!("  Index: {}", best_index);
     println!("  Zeros: {} out of {} bits", best_zeros, total_bits);
     println!("  Hash: {}", hex_encode(&best_hash));
+    // Show how much the best result improved zero-bits compared to the original random sequence
+    let base_zeros = count_zeros(random_sequence);
+    let enhancement = best_zeros as isize - base_zeros as isize;
+    println!(
+        "  Enhancement vs original sequence: {:+} zero bits (original: {} / {})",
+        enhancement, base_zeros, total_bits
+    );
 }
