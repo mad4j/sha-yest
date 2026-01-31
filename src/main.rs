@@ -80,9 +80,12 @@ fn count_zeros(data: &[u8]) -> usize {
     data.iter().map(|byte| byte.count_zeros() as usize).sum()
 }
 
-/// Performs XOR between two byte arrays of the same length
-fn xor_arrays(a: &[u8], b: &[u8]) -> Vec<u8> {
-    a.iter().zip(b.iter()).map(|(x, y)| x ^ y).collect()
+/// Counts the number of zero bits in (a XOR b) without allocating.
+fn count_xor_zeros(a: &[u8], b: &[u8]) -> usize {
+    a.iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x ^ y).count_zeros() as usize)
+        .sum()
 }
 
 fn main() {
@@ -243,6 +246,10 @@ fn search_sha256_128(
     let total_bits: u16 = 128;
     pb.set_message("best=0".to_string());
 
+    // Progress updates are expensive in parallel; batch them for large searches.
+    // Power-of-two stride enables a cheap bitmask check.
+    let pb_stride: u64 = if max_iterations >= 10_000_000 { 4096 } else { 1 };
+
     let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
     let best_zeros = AtomicUsize::new(0);
     let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
@@ -258,13 +265,14 @@ fn search_sha256_128(
         let full_hash = hasher.finalize();
         let hash = &full_hash[..16];
 
-        // XOR with random sequence
-        let xor_result = xor_arrays(hash, random_sequence);
+        // Count zeros in XOR(hash, random_sequence) without allocating
+        let zeros = count_xor_zeros(hash, random_sequence);
 
-        // Count zeros in the XOR result
-        let zeros = count_zeros(&xor_result);
-
-        pb.inc(1);
+        if pb_stride == 1 {
+            pb.inc(1);
+        } else if (i & (pb_stride - 1)) == 0 {
+            pb.inc(pb_stride);
+        }
 
         // Update best result (atomic gate + mutex for hash storage)
         let mut current_best = best_zeros.load(Ordering::Relaxed);
@@ -332,6 +340,8 @@ fn search_sha256(
     let total_bits: u16 = 256;
     pb.set_message("best=0".to_string());
 
+    let pb_stride: u64 = if max_iterations >= 10_000_000 { 4096 } else { 1 };
+
     let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
     let best_zeros = AtomicUsize::new(0);
     let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
@@ -346,13 +356,13 @@ fn search_sha256(
         hasher.update(i.to_le_bytes());
         let hash = hasher.finalize();
 
-        // XOR with random sequence
-        let xor_result = xor_arrays(&hash, random_sequence);
+        let zeros = count_xor_zeros(&hash, random_sequence);
 
-        // Count zeros in the XOR result
-        let zeros = count_zeros(&xor_result);
-
-        pb.inc(1);
+        if pb_stride == 1 {
+            pb.inc(1);
+        } else if (i & (pb_stride - 1)) == 0 {
+            pb.inc(pb_stride);
+        }
 
         // Update best result (atomic gate + mutex for hash storage)
         let mut current_best = best_zeros.load(Ordering::Relaxed);
@@ -420,6 +430,8 @@ fn search_sha512(
     let total_bits: u16 = 512;
     pb.set_message("best=0".to_string());
 
+    let pb_stride: u64 = if max_iterations >= 10_000_000 { 4096 } else { 1 };
+
     let stop_reason = AtomicU8::new(0); // 0=none, 1=threshold, 2=perfect
     let best_zeros = AtomicUsize::new(0);
     let best = Mutex::new((0u64, 0usize, Vec::<u8>::new()));
@@ -434,13 +446,13 @@ fn search_sha512(
         hasher.update(i.to_le_bytes());
         let hash = hasher.finalize();
 
-        // XOR with random sequence
-        let xor_result = xor_arrays(&hash, random_sequence);
+        let zeros = count_xor_zeros(&hash, random_sequence);
 
-        // Count zeros in the XOR result
-        let zeros = count_zeros(&xor_result);
-
-        pb.inc(1);
+        if pb_stride == 1 {
+            pb.inc(1);
+        } else if (i & (pb_stride - 1)) == 0 {
+            pb.inc(pb_stride);
+        }
 
         // Update best result (atomic gate + mutex for hash storage)
         let mut current_best = best_zeros.load(Ordering::Relaxed);
